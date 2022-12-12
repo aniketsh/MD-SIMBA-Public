@@ -1,4 +1,5 @@
-#!/home/magarkar/anaconda3/bin/python
+#!/home/magarkar/anaconda3/envs/sp/bin/python
+
 import parmed as pmd
 import subprocess, os, sys
 import MDAnalysis as mda
@@ -8,6 +9,10 @@ from rdkit import Chem
 import numpy as np
 import pandas as pd
 from numpy import genfromtxt
+import warnings
+warnings.filterwarnings("ignore")
+
+
 
 def load_sdf_with_N(sdf_file, **kargs):
     ''' Loads a molecule correctly when there is a N(+)R4 in it by setting the charge of N to +1 '''
@@ -15,11 +20,11 @@ def load_sdf_with_N(sdf_file, **kargs):
     try:
         tmp_mol = Chem.SDMolSupplier(sdf_file, removeHs=False, sanitize=False)
     except:
-        eprint('Could not load mol from', sdf_file)
+        print('Could not load mol from', sdf_file)
         return []
     for this_mol in tmp_mol:
         if not this_mol:
-            eprint('Error loading Molecule')
+            print('Error loading Molecule')
             continue
         for atom in this_mol.GetAtoms():
             if atom.GetSymbol() == 'N':
@@ -136,21 +141,24 @@ def box_size():
 
 def mol_index():
 
-    a=subprocess.getoutput("echo q | /home/magarkar/anaconda3/envs/gromacs/bin/gmx make_ndx -f prod.tpr").split("\n")
+    a=subprocess.getoutput("echo q | gmx make_ndx -f prod.tpr").split("\n")
     for line in a:
-        if "MOL" in line:
+        if " MOL " in line:
             return(line.split()[0])
 
 def postprocess_gromacs(xtc):
     if os.path.isfile(xtc) and os.path.isfile('prod.tpr'):
         mol_num=mol_index()
+
         b=box_size()*2
         b=str(b)
 
         subprocess.getoutput("echo %s System| gmx trjconv -f %s -s prod.tpr -center -pbc mol -o center.xtc"%(mol_num,xtc))
+
+        #print("echo %s System| gmx trjconv -f %s -s prod.tpr -center -pbc mol -o center.xtc"%(mol_num,xtc))
 #        subprocess.getoutput("echo C-alpha System| gmx trjconv -f center.xtc -s prod.tpr -o traj.xtc -fit rot+trans")
 #        subprocess.getoutput("echo C-alpha System| gmx trjconv -f center.xtc -s prod.tpr -o traj.gro -e 0 -fit rot+trans")
-        subprocess.getoutput("echo C-alpha System| gmx trjconv -f center.xtc -s prod.tpr -o box.xtc -fit rot+trans")
+        subprocess.getoutput("echo Backbone System| gmx trjconv -f center.xtc -s prod.tpr -o box.xtc -fit rot+trans")
         subprocess.getoutput("echo Protein System| gmx trjconv -f box.xtc -s prod.tpr -box %s %s %s -o traj.xtc -center"%(b,b,b))
         subprocess.getoutput("echo Protein System| gmx trjconv -f box.xtc -s prod.tpr -box %s %s %s -o traj.gro -e 0 -center"%(b,b,b))
     else:
@@ -163,12 +171,14 @@ xtc='prod.xtc'
 u=mda.Universe(gro,xtc)
 
 total_frames=u.trajectory.n_frames
-number_of_frames=50
+number_of_frames=250
 
 if total_frames>number_of_frames:
+    print(total_frames)
     interval=int(total_frames/number_of_frames)
     fiter = u.trajectory[::interval]
     frames = [ts.frame for ts in fiter]
+    
     u.atoms.write('short.xtc', frames=frames)
     postprocess_gromacs("short.xtc")
 else:
@@ -176,10 +186,36 @@ else:
 
 #sys.exit()
 
+
 ########################################################################################
 
 #2 parmed to convert gromacs to AMBER
 print("Step 2/6 Convering to AMBER topology")
+
+if not os.path.isfile("topol.top"):
+	subprocess.getoutput("cp ../topol2.top topol.top")
+
+
+# Prepare it for membrane 
+
+if 'DOPC' in open('topol.top').read():
+    u=mda.Universe('traj.gro','traj.xtc')
+    select = u.select_atoms('not resname DOPC POPC')
+    select.write('mda.xtc',frames='all')
+    select.write('mda.gro')
+    subprocess.getoutput('cp mda.xtc traj.xtc')
+    subprocess.getoutput('cp mda.gro traj.gro')    
+    subprocess.getoutput('cp topol.top topol_backup.top')
+
+    with open("topol.top", "r") as f:
+        lines = f.readlines()
+    with open("topol.top", "w") as f:
+        for line in lines:
+            if line.startswith("DOPC"):
+                if " 3" in line:
+                    f.write(line)
+            else:
+                f.write(line)
 
 top = pmd.load_file("topol.top",defines=dict(DEFINE='DUMMY'))
 struct = pmd.load_file("traj.gro",skip_bonds=True)
@@ -222,7 +258,7 @@ ligand_displacement = check_ligand_displacement("for_simba.gro","for_simba.xtc",
 rmsd_summary=calculate_RMSD("for_simba.gro","for_simba.xtc")
 
 subprocess.getoutput("egrep \"ATOM|HETATM\" %s | egrep %s > ligand.pdb"%("for_simba.pdb","MOL"))
-subprocess.getoutput("/home/magarkar/anaconda3/bin/obabel -ipdb ligand.pdb -O ligand.sdf --gen2d")
+subprocess.getoutput("/home/magarkar/anaconda3/envs/sp/bin/obabel -ipdb ligand.pdb -O ligand.sdf --gen2d")
 #
 mol = load_sdf_with_N("ligand.sdf")
 mol = mol[0]
@@ -237,6 +273,6 @@ w.write(mol)
 w.close()
 #
 
-if os.path.isfile("traj.xtc") and os.path.isfile("traj.gro"):
+if os.path.isfile("result.dat"):
     print("Cleaning UP")
-    subprocess.getoutput("rm *#* *.prmtop mmbpsa.in closest20.in complex.* energy.* _MM* N20.* traj.xtc short.xtc index.ndx center.xtc for_simba_raw.xtc")
+    subprocess.getoutput("rm *#* *.prmtop mmbpsa.in closest20.in complex.* energy.* _MM* N20.* traj.xtc short.xtc index.ndx center.xtc for_simba_raw.xtc ligand.pdb ligand.sdf box.xtc mda.*")
